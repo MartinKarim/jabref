@@ -1,8 +1,9 @@
 package org.jabref.gui.exporter;
 
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
+import java.util.stream.Collectors;
 
 import javafx.stage.FileChooser;
 
@@ -10,9 +11,9 @@ import org.jabref.Globals;
 import org.jabref.gui.DialogService;
 import org.jabref.gui.JabRefFrame;
 import org.jabref.gui.actions.SimpleCommand;
+import org.jabref.gui.util.BackgroundTask;
 import org.jabref.gui.util.FileDialogConfiguration;
 import org.jabref.gui.util.FileFilterConverter;
-import org.jabref.gui.worker.AbstractWorker;
 import org.jabref.logic.exporter.Exporter;
 import org.jabref.logic.exporter.ExporterFactory;
 import org.jabref.logic.exporter.SavePreferences;
@@ -50,19 +51,24 @@ public class ExportCommand extends SimpleCommand {
 
     @Override
     public void execute() {
-        Map<String, TemplateExporter> customExporters = preferences.customExports.getCustomExportFormats(preferences, Globals.journalAbbreviationLoader);
+        List<TemplateExporter> customExporters = preferences.getCustomExportFormats(Globals.journalAbbreviationLoader);
         LayoutFormatterPreferences layoutPreferences = preferences.getLayoutFormatterPreferences(Globals.journalAbbreviationLoader);
         SavePreferences savePreferences = preferences.loadForExportFromPreferences();
         XmpPreferences xmpPreferences = preferences.getXMPPreferences();
 
+        //Get list of exporters and sort before adding to file dialog
+        List<Exporter> exporters = Globals.exportFactory.getExporters().stream()
+                .sorted(Comparator.comparing(Exporter::getName))
+                .collect(Collectors.toList());
+
         Globals.exportFactory = ExporterFactory.create(customExporters, layoutPreferences, savePreferences, xmpPreferences);
         FileDialogConfiguration fileDialogConfiguration = new FileDialogConfiguration.Builder()
-                .addExtensionFilter(FileFilterConverter.exporterToExtensionFilter(Globals.exportFactory.getExporters()))
+                .addExtensionFilter(FileFilterConverter.exporterToExtensionFilter(exporters))
                 .withDefaultExtension(Globals.prefs.get(JabRefPreferences.LAST_USED_EXPORT))
                 .withInitialDirectory(Globals.prefs.get(JabRefPreferences.EXPORT_WORKING_DIRECTORY))
                 .build();
         dialogService.showFileSaveDialog(fileDialogConfiguration)
-                     .ifPresent(path -> export(path, fileDialogConfiguration.getSelectedExtensionFilter(), Globals.exportFactory.getExporters()));
+                     .ifPresent(path -> export(path, fileDialogConfiguration.getSelectedExtensionFilter(), exporters));
     }
 
     private void export(Path file, FileChooser.ExtensionFilter selectedExtensionFilter, List<Exporter> exporters) {
@@ -86,8 +92,8 @@ public class ExportCommand extends SimpleCommand {
         // so formatters can resolve linked files correctly.
         // (This is an ugly hack!)
         Globals.prefs.fileDirForDatabase = frame.getCurrentBasePanel()
-                .getBibDatabaseContext()
-                .getFileDirectories(Globals.prefs.getFileDirectoryPreferences());
+                                                .getBibDatabaseContext()
+                                                .getFileDirectories(Globals.prefs.getFilePreferences());
 
         // Make sure we remember which filter was used, to set
         // the default for next time:
@@ -95,50 +101,27 @@ public class ExportCommand extends SimpleCommand {
         Globals.prefs.put(JabRefPreferences.EXPORT_WORKING_DIRECTORY, file.getParent().toString());
 
         final List<BibEntry> finEntries = entries;
-        AbstractWorker exportWorker = new AbstractWorker() {
-
-            String errorMessage;
-
-            @Override
-            public void run() {
-                try {
+        BackgroundTask
+                .wrap(() -> {
                     format.export(frame.getCurrentBasePanel().getBibDatabaseContext(),
                             file,
                             frame.getCurrentBasePanel()
-                                    .getBibDatabaseContext()
-                                    .getMetaData()
-                                    .getEncoding()
-                                    .orElse(Globals.prefs.getDefaultEncoding()),
+                                 .getBibDatabaseContext()
+                                 .getMetaData()
+                                 .getEncoding()
+                                 .orElse(Globals.prefs.getDefaultEncoding()),
                             finEntries);
-                } catch (Exception ex) {
-                    LOGGER.warn("Problem exporting", ex);
-                    if (ex.getMessage() == null) {
-                        errorMessage = ex.toString();
-                    } else {
-                        errorMessage = ex.getMessage();
-                    }
-                }
-            }
+                    return null; // can not use BackgroundTask.wrap(Runnable) because Runnable.run() can't throw Exceptions
+                })
+                .onSuccess(x -> frame.output(Localization.lang("%0 export successful", format.getName())))
+                .onFailure(this::handleError)
+                .executeWith(Globals.TASK_EXECUTOR);
+    }
 
-            @Override
-            public void update() {
-                // No error message. Report success:
-                if (errorMessage == null) {
-                    frame.output(Localization.lang("%0 export successful", format.getName()));
-                }
-                // ... or show an error dialog:
-                else {
-                    frame.output(Localization.lang("Could not save file.") + " - " + errorMessage);
-                    // Need to warn the user that saving failed!
-                    frame.getDialogService().showErrorDialogAndWait(Localization.lang("Save library"), Localization.lang("Could not save file.") + "\n" + errorMessage);
-
-                }
-            }
-        };
-
-        // Run the export action in a background thread:
-        exportWorker.getWorker().run();
-        // Run the update method:
-        exportWorker.update();
+    private void handleError(Exception ex) {
+        LOGGER.warn("Problem exporting", ex);
+        frame.output(Localization.lang("Could not save file."));
+        // Need to warn the user that saving failed!
+        frame.getDialogService().showErrorDialogAndWait(Localization.lang("Save library"), Localization.lang("Could not save file."), ex);
     }
 }

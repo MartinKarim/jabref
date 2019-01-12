@@ -196,7 +196,7 @@ public class GlobalSearchBar extends HBox {
         this.setAlignment(Pos.CENTER_LEFT);
     }
 
-    public void performGlobalSearch() {
+    private void performGlobalSearch() {
         BasePanel currentBasePanel = frame.getCurrentBasePanel();
         if ((currentBasePanel == null) || validateSearchResultFrame(true)) {
             return;
@@ -274,7 +274,6 @@ public class GlobalSearchBar extends HBox {
         if (currentBasePanel != null) {
             clearSearch();
             MainTable mainTable = frame.getCurrentBasePanel().getMainTable();
-            //Globals.getFocusListener().setFocused(mainTable);
             mainTable.requestFocus();
             //SwingUtilities.invokeLater(() -> mainTable.ensureVisible(mainTable.getSelectedRow()));
         }

@@ -1,5 +1,7 @@
 package org.jabref.gui.entryeditor;
 
+import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -16,23 +18,30 @@ import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.input.DataFormat;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 
+import org.jabref.Globals;
 import org.jabref.gui.BasePanel;
 import org.jabref.gui.DialogService;
 import org.jabref.gui.GUIGlobals;
+import org.jabref.gui.actions.ActionFactory;
+import org.jabref.gui.actions.GenerateBibtexKeySingleAction;
+import org.jabref.gui.actions.StandardActions;
 import org.jabref.gui.entryeditor.fileannotationtab.FileAnnotationTab;
+import org.jabref.gui.externalfiles.NewDroppedFileHandler;
+import org.jabref.gui.externalfiletype.ExternalFileTypes;
 import org.jabref.gui.help.HelpAction;
 import org.jabref.gui.keyboard.KeyBinding;
 import org.jabref.gui.menus.ChangeEntryTypeMenu;
-import org.jabref.gui.mergeentries.EntryFetchAndMergeWorker;
+import org.jabref.gui.mergeentries.FetchAndMergeEntry;
 import org.jabref.gui.undo.CountingUndoManager;
-import org.jabref.gui.undo.UndoableKeyChange;
 import org.jabref.gui.util.ColorUtil;
 import org.jabref.gui.util.DefaultTaskExecutor;
+import org.jabref.gui.util.TaskExecutor;
 import org.jabref.logic.TypedBibEntry;
-import org.jabref.logic.bibtexkeypattern.BibtexKeyGenerator;
 import org.jabref.logic.help.HelpFile;
 import org.jabref.logic.importer.EntryBasedFetcher;
 import org.jabref.logic.importer.WebFetchers;
@@ -44,6 +53,8 @@ import org.jabref.model.util.FileUpdateMonitor;
 import com.airhacks.afterburner.views.ViewLoader;
 import org.fxmisc.easybind.EasyBind;
 import org.fxmisc.easybind.Subscription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * GUI component that allows editing of the fields of a BibEntry (i.e. the
@@ -57,7 +68,9 @@ import org.fxmisc.easybind.Subscription;
  */
 public class EntryEditor extends BorderPane {
 
-    private final BibDatabaseContext bibDatabaseContext;
+    private static final Logger LOGGER = LoggerFactory.getLogger(EntryEditor.class);
+
+    private final BibDatabaseContext databaseContext;
     private final CountingUndoManager undoManager;
     private final BasePanel panel;
     private final List<SearchQueryHighlightListener> searchListeners = new ArrayList<>();
@@ -74,16 +87,27 @@ public class EntryEditor extends BorderPane {
     @FXML private Button typeChangeButton;
     @FXML private Button fetcherButton;
     @FXML private Label typeLabel;
+    @FXML private Button generateCiteKeyButton;
+
     private final EntryEditorPreferences preferences;
     private final DialogService dialogService;
+    private final NewDroppedFileHandler fileHandler;
+    private final TaskExecutor taskExecutor;
 
-    public EntryEditor(BasePanel panel, EntryEditorPreferences preferences, FileUpdateMonitor fileMonitor, DialogService dialogService) {
+    public EntryEditor(BasePanel panel, EntryEditorPreferences preferences, FileUpdateMonitor fileMonitor, DialogService dialogService, ExternalFileTypes externalFileTypes, TaskExecutor taskExecutor) {
         this.panel = panel;
-        this.bibDatabaseContext = panel.getBibDatabaseContext();
+        this.databaseContext = panel.getBibDatabaseContext();
         this.undoManager = panel.getUndoManager();
         this.preferences = Objects.requireNonNull(preferences);
         this.fileMonitor = fileMonitor;
         this.dialogService = dialogService;
+        this.taskExecutor = taskExecutor;
+
+        fileHandler = new NewDroppedFileHandler(dialogService, databaseContext, externalFileTypes,
+                Globals.prefs.getFilePreferences(),
+                                                Globals.prefs.getImportFormatPreferences(),
+                                                Globals.prefs.getUpdateFieldPreferences(),
+                Globals.getFileUpdateMonitor());
 
         ViewLoader.view(this)
                   .root(this)
@@ -106,6 +130,84 @@ public class EntryEditor extends BorderPane {
         setupKeyBindings();
 
         tabs = createTabs();
+
+        this.setOnDragOver(event -> {
+            if (event.getDragboard().hasFiles()) {
+                event.acceptTransferModes(TransferMode.COPY, TransferMode.MOVE, TransferMode.LINK);
+            }
+            event.consume();
+        });
+
+        this.setOnDragDropped(event -> {
+            BibEntry entry = this.getEntry();
+            boolean success = false;
+            if (event.getDragboard().hasContent(DataFormat.FILES)) {
+                List<Path> files = event.getDragboard().getFiles().stream().map(File::toPath).collect(Collectors.toList());
+
+                FileDragDropPreferenceType dragDropPreferencesType = Globals.prefs.getEntryEditorFileLinkPreference();
+
+                if (dragDropPreferencesType == FileDragDropPreferenceType.MOVE)
+                {
+                    if (event.getTransferMode() == TransferMode.LINK) //alt on win
+                    {
+                        LOGGER.debug("Mode LINK");
+                        fileHandler.addToEntry(entry, files);
+                    }
+                    else if (event.getTransferMode() == TransferMode.COPY) //ctrl on win, no modifier on Xubuntu
+                    {
+                        LOGGER.debug("Mode COPY");
+                        fileHandler.copyFilesToFileDirAndAddToEntry(entry, files);
+                    }
+                    else
+                    {
+                        LOGGER.debug("Mode MOVE"); //shift on win or no modifier
+                        fileHandler.addToEntryRenameAndMoveToFileDir(entry, files);
+                    }
+                }
+
+                if (dragDropPreferencesType == FileDragDropPreferenceType.COPY)
+                {
+                    if (event.getTransferMode() == TransferMode.COPY) //ctrl on win, no modifier on Xubuntu
+                    {
+                        LOGGER.debug("Mode MOVE");
+                        fileHandler.addToEntryRenameAndMoveToFileDir(entry, files);
+                    }
+                    else if (event.getTransferMode() == TransferMode.LINK) //alt on win
+                    {
+                        LOGGER.debug("Mode LINK");
+                        fileHandler.addToEntry(entry, files);
+                    }
+                    else
+                    {
+                        LOGGER.debug("Mode COPY"); //shift on win or no modifier
+                        fileHandler.copyFilesToFileDirAndAddToEntry(entry, files);
+                    }
+                }
+
+                if (dragDropPreferencesType == FileDragDropPreferenceType.LINK)
+                {
+                    if (event.getTransferMode() == TransferMode.COPY) //ctrl on win, no modifier on Xubuntu
+                    {
+                        LOGGER.debug("Mode COPY");
+                        fileHandler.copyFilesToFileDirAndAddToEntry(entry, files);
+                    }
+                    else if (event.getTransferMode() == TransferMode.LINK) //alt on win
+                    {
+                        LOGGER.debug("Mode MOVE");
+                        fileHandler.addToEntryRenameAndMoveToFileDir(entry, files);
+                    }
+                    else
+                    {
+                        LOGGER.debug("Mode LINK"); //shift on win or no modifier
+                        fileHandler.addToEntry(entry, files);
+                    }
+                }
+            }
+
+            event.setDropCompleted(success);
+            event.consume();
+
+        });
     }
 
     /**
@@ -142,6 +244,10 @@ public class EntryEditor extends BorderPane {
                         close();
                         event.consume();
                         break;
+                    case CLOSE_ENTRY:
+                        close();
+                        event.consume();
+                        break;
                     default:
                         // Pass other keys to parent
                 }
@@ -152,13 +258,6 @@ public class EntryEditor extends BorderPane {
     @FXML
     public void close() {
         panel.entryEditorClosing(EntryEditor.this);
-    }
-
-    @FXML
-    public void generateKey() {
-        new BibtexKeyGenerator(bibDatabaseContext, preferences.getBibtexKeyPatternPreferences())
-                .generateAndSetKey(entry)
-                .ifPresent(change -> undoManager.addEdit(new UndoableKeyChange(change)));
     }
 
     @FXML
@@ -198,10 +297,10 @@ public class EntryEditor extends BorderPane {
         // Special tabs
         tabs.add(new MathSciNetTab());
         tabs.add(new FileAnnotationTab(panel.getAnnotationCache()));
-        tabs.add(new RelatedArticlesTab(preferences));
+        tabs.add(new RelatedArticlesTab(preferences, dialogService));
 
         // Source tab
-        sourceTab = new SourceTab(bibDatabaseContext, undoManager, preferences.getLatexFieldFormatterPreferences(), preferences.getImportFormatPreferences(), fileMonitor);
+        sourceTab = new SourceTab(databaseContext, undoManager, preferences.getLatexFieldFormatterPreferences(), preferences.getImportFormatPreferences(), fileMonitor);
         tabs.add(sourceTab);
         return tabs;
     }
@@ -265,7 +364,7 @@ public class EntryEditor extends BorderPane {
 
         // Subscribe to type changes for rebuilding the currently visible tab
         typeSubscription = EasyBind.subscribe(this.entry.typeProperty(), type -> {
-            typeLabel.setText(new TypedBibEntry(entry, bibDatabaseContext.getMode()).getTypeForDisplay());
+            typeLabel.setText(new TypedBibEntry(entry, databaseContext.getMode()).getTypeForDisplay());
             recalculateVisibleTabs();
             getSelectedTab().notifyAboutFocus(entry);
         });
@@ -277,21 +376,32 @@ public class EntryEditor extends BorderPane {
 
     private void setupToolBar() {
         // Update type label
-        TypedBibEntry typedEntry = new TypedBibEntry(entry, bibDatabaseContext.getMode());
+        TypedBibEntry typedEntry = new TypedBibEntry(entry, databaseContext.getMode());
         typeLabel.setText(typedEntry.getTypeForDisplay());
 
         // Add type change menu
-        ContextMenu typeMenu = new ChangeEntryTypeMenu(preferences.getKeyBindings()).getChangeEntryTypePopupMenu(entry, bibDatabaseContext, undoManager);
+        ContextMenu typeMenu = new ChangeEntryTypeMenu(preferences.getKeyBindings()).getChangeEntryTypePopupMenu(entry, databaseContext, undoManager);
         typeLabel.setOnMouseClicked(event -> typeMenu.show(typeLabel, Side.RIGHT, 0, 0));
         typeChangeButton.setOnMouseClicked(event -> typeMenu.show(typeChangeButton, Side.RIGHT, 0, 0));
         // Add menu for fetching bibliographic information
         ContextMenu fetcherMenu = new ContextMenu();
         for (EntryBasedFetcher fetcher : WebFetchers.getEntryBasedFetchers(preferences.getImportFormatPreferences())) {
             MenuItem fetcherMenuItem = new MenuItem(fetcher.getName());
-            fetcherMenuItem.setOnAction(event -> new EntryFetchAndMergeWorker(panel, getEntry(), fetcher).execute());
+            fetcherMenuItem.setOnAction(event -> fetchAndMerge(fetcher));
             fetcherMenu.getItems().add(fetcherMenuItem);
         }
         fetcherButton.setOnMouseClicked(event -> fetcherMenu.show(fetcherButton, Side.RIGHT, 0, 0));
+
+        // Configure cite key button
+        new ActionFactory(preferences.getKeyBindings())
+                .configureIconButton(
+                        StandardActions.GENERATE_CITE_KEY,
+                        new GenerateBibtexKeySingleAction(getEntry(), databaseContext, dialogService, preferences, undoManager),
+                        generateCiteKeyButton);
+    }
+
+    private void fetchAndMerge(EntryBasedFetcher fetcher) {
+        new FetchAndMergeEntry(panel, taskExecutor).fetchAndMerge(entry, fetcher);
     }
 
     void addSearchListener(SearchQueryHighlightListener listener) {

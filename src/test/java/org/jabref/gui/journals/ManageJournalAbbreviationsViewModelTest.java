@@ -21,10 +21,10 @@ import org.jabref.logic.journals.JournalAbbreviationLoader;
 import org.jabref.logic.journals.JournalAbbreviationPreferences;
 import org.jabref.preferences.PreferencesService;
 
-import org.junit$pioneer.jupiter.TempDirectory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junitpioneer.jupiter.TempDirectory;
 
 import static org.jabref.logic.util.OS.NEWLINE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -209,7 +209,7 @@ class ManageJournalAbbreviationsViewModelTest {
                 .observableArrayList(JournalAbbreviationLoader.getBuiltInAbbreviations());
         ObservableList<Abbreviation> actualAbbreviations = FXCollections
                 .observableArrayList(viewModel.abbreviationsProperty().stream()
-                        .map(AbbreviationViewModel::getAbbreviationObject).collect(Collectors.toList()));
+                                              .map(AbbreviationViewModel::getAbbreviationObject).collect(Collectors.toList()));
 
         assertEquals(expected, actualAbbreviations);
     }
@@ -224,7 +224,7 @@ class ManageJournalAbbreviationsViewModelTest {
                 .observableArrayList(JournalAbbreviationLoader.getOfficialIEEEAbbreviations());
         ObservableList<Abbreviation> actualAbbreviations = FXCollections
                 .observableArrayList(viewModel.abbreviationsProperty().stream()
-                        .map(AbbreviationViewModel::getAbbreviationObject).collect(Collectors.toList()));
+                                              .map(AbbreviationViewModel::getAbbreviationObject).collect(Collectors.toList()));
 
         assertEquals(expected, actualAbbreviations);
     }
@@ -443,7 +443,7 @@ class ManageJournalAbbreviationsViewModelTest {
     void testSaveExternalFilesListToPreferences() throws Exception {
         addFourTestFileToViewModelAndPreferences();
         List<String> expected = Stream.of(testFile1Entries, testFile3Entries, testFile4Entries, testFile5EntriesWithDuplicate)
-                .map(Path::toString).collect(Collectors.toList());
+                                      .map(Path::toString).collect(Collectors.toList());
         verify(abbreviationPreferences).setExternalJournalLists(expected);
     }
 
@@ -478,6 +478,6 @@ class ManageJournalAbbreviationsViewModelTest {
      */
     private void selectLastAbbreviation() {
         viewModel.currentAbbreviationProperty()
-                .set(viewModel.abbreviationsProperty().get(viewModel.abbreviationsCountProperty().get() - 1));
+                 .set(viewModel.abbreviationsProperty().get(viewModel.abbreviationsCountProperty().get() - 1));
     }
 }
